@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment Variables
+.env
+.env.*
+
+# Cache
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# SQLite
+*.db
+
+# Temporary files
+*.tmp
