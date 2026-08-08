@@ -161,6 +161,13 @@ class DataFlowPipeline:
 
         # Hardware MQTT Actuation & WebSocket Broadcasting
         if sup_res["executed_on_hardware"]:
+            if hasattr(provider, "set_approved_green_durations"):
+                provider.set_approved_green_durations(
+                    ns_green=sup_res.get("approved_green_ns", 30),
+                    ew_green=sup_res.get("approved_green_ew", 30),
+                    decision_id=decision_id
+                )
+
             mqtt_client.publish_decision_plan(full_decision_payload)
             log5 = self._add_log("INFO", "HardwareMQTTClient", f"Published AI decision payload to MQTT topic traffic/signals/control (Decision: {decision_id})")
             await logs_manager.broadcast({"event": "pipeline_event", **log5})
@@ -169,29 +176,21 @@ class DataFlowPipeline:
             await logs_manager.broadcast({"event": "pipeline_event", **log6})
 
             for sig in state.signals:
-                # Update timer remaining on signal heads based on AI allocation
-                allocated_sec = opt_res["green_durations"].get(sig.direction, 25) if sig.state == "GREEN" else 15
-                mqtt_client.publish_signal_state(sig.signal_id, sig.state, allocated_sec)
+                mqtt_client.publish_signal_state(sig.signal_id, sig.state, sig.remaining_time)
 
-        # Broadcast live signal update to UI
+        # Broadcast authoritative signal state sync to UI (driven by SUMO TraCI single source of truth)
         await signals_manager.broadcast({
-            "event": "signal_phase_change",
+            "event": "signal_state_sync",
             "timestamp": datetime.now().isoformat(),
             "source": state.source,
             "confidence": state.confidence,
             "decision_id": decision_id,
+            "simulation_time": state.signals[0].simulation_time if state.signals else 0.0,
+            "phase_id": state.signals[0].phase_id if state.signals else 0,
+            "remaining_time": state.signals[0].remaining_time if state.signals else 0,
             "target_approach": opt_res["target_approach"],
             "durations": opt_res["phase_durations"],
-            "signals": [
-                {
-                    "signal_id": sig.signal_id,
-                    "direction": sig.direction,
-                    "state": sig.state,
-                    "timer_remaining": opt_res["green_durations"].get(sig.direction, 25) if sig.state == "GREEN" else 15,
-                    "mode": "AI-Adaptive"
-                }
-                for sig in state.signals
-            ]
+            "signals": [sig.model_dump() for sig in state.signals]
         })
 
         return full_decision_payload

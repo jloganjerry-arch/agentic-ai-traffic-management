@@ -36,8 +36,15 @@ class SignalHeadState(BaseModel):
     signal_id: str = Field(..., description="Signal head hardware ID")
     direction: str = Field(..., description="Direction served")
     state: str = Field(..., description="Signal state (GREEN, YELLOW, RED)")
-    timer_remaining: int = Field(..., description="Remaining seconds in phase")
-    mode: str = Field(..., description="Control mode (AI-Optimized, Manual, Fixed)")
+    phase_id: int = Field(0, description="Active TLS phase index")
+    phase_start_time: float = Field(0.0, description="Phase start simulation time")
+    phase_end_time: float = Field(0.0, description="Phase end simulation time")
+    remaining_time: int = Field(0, description="Remaining seconds in phase")
+    simulation_time: float = Field(0.0, description="Current SUMO simulation time")
+    decision_id: Optional[str] = Field(None, description="Associated decision ID")
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+    timer_remaining: int = Field(0, description="Remaining seconds in phase")
+    mode: str = Field("AI-Adaptive", description="Control mode (AI-Optimized, Manual, Fixed)")
 
 class SignalListResponse(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())

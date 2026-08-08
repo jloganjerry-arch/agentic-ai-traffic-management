@@ -62,6 +62,15 @@ class SumoTrafficProvider(TrafficStateProvider):
         self._lock = threading.Lock()
         self._step_counter = 0
 
+        # SUMO TraCI Phase Tracking State
+        self._last_phase_id: Optional[int] = None
+        self._duration_applied_for_phase: Optional[int] = None
+        self._phase_start_time: float = 0.0
+        self._phase_end_time: float = 0.0
+        self._current_decision_id: str = "DEC-INITIAL"
+        self._pending_ns_green: Optional[int] = None
+        self._pending_ew_green: Optional[int] = None
+
         # Rolling time-series history buffer (max 100 points)
         self._time_series_buffer: List[Dict[str, Any]] = []
 
@@ -76,6 +85,34 @@ class SumoTrafficProvider(TrafficStateProvider):
 
     def get_source_name(self) -> str:
         return self._source_name
+
+    def set_approved_green_durations(self, ns_green: int, ew_green: int, decision_id: str = ""):
+        """
+        Applies supervisor-approved AI green durations to SUMO via TraCI setPhaseDuration.
+        Ensures setPhaseDuration is called ONLY ONCE per phase instance to prevent resetting active phase countdowns every 3 seconds.
+        """
+        with self._lock:
+            self._pending_ns_green = ns_green
+            self._pending_ew_green = ew_green
+            self._current_decision_id = decision_id
+
+        if traci is not None and self._is_running:
+            try:
+                tls_ids = traci.trafficlight.getIDList()
+                if tls_ids:
+                    tls_id = tls_ids[0]
+                    curr_phase = int(traci.trafficlight.getPhase(tls_id))
+                    # Only apply mid-phase if duration has NOT been set yet for this phase instance
+                    if curr_phase == 0 and self._duration_applied_for_phase != 0:
+                        traci.trafficlight.setPhaseDuration(tls_id, float(ew_green))
+                        self._duration_applied_for_phase = 0
+                        logger.info(f"[SUMO TraCI] Set initial WE GREEN duration {ew_green}s for Phase 0 (Decision: {decision_id})")
+                    elif curr_phase == 2 and self._duration_applied_for_phase != 2:
+                        traci.trafficlight.setPhaseDuration(tls_id, float(ns_green))
+                        self._duration_applied_for_phase = 2
+                        logger.info(f"[SUMO TraCI] Set initial NS GREEN duration {ns_green}s for Phase 2 (Decision: {decision_id})")
+            except Exception as e:
+                logger.warning(f"Note setting SUMO phase duration via TraCI: {e}")
 
     def _start_simulation_loop(self):
         if traci is None:
@@ -204,12 +241,55 @@ class SumoTrafficProvider(TrafficStateProvider):
         else:
             current_congestion = "Congested"
 
-        # Read signal phase from TLS J1
+        # Read signal phase and real-time timing metrics from SUMO TLS J1
         current_signal_phase = "NS GREEN"
+        sim_time = 0.0
+        phase_id = 0
+        remaining_time = 15
         tls_ids = traci.trafficlight.getIDList()
         if tls_ids:
             tls_id = tls_ids[0]
+            sim_time = float(traci.simulation.getTime())
+            phase_id = int(traci.trafficlight.getPhase(tls_id))
+            next_switch = float(traci.trafficlight.getNextSwitch(tls_id))
+            remaining_time = max(0, int(round(next_switch - sim_time)))
             phase_state = traci.trafficlight.getRedYellowGreenState(tls_id)
+
+            # Phase transition detection and logging
+            if self._last_phase_id is None or phase_id != self._last_phase_id:
+                prev_phase = self._last_phase_id
+                self._phase_start_time = sim_time
+                self._phase_end_time = next_switch
+                self._last_phase_id = phase_id
+                self._duration_applied_for_phase = None
+
+                # Apply pending green duration for newly entered phase
+                if phase_id == 0 and self._pending_ew_green is not None:
+                    try:
+                        traci.trafficlight.setPhaseDuration(tls_id, float(self._pending_ew_green))
+                        self._duration_applied_for_phase = 0
+                        next_switch = float(traci.trafficlight.getNextSwitch(tls_id))
+                        remaining_time = max(0, int(round(next_switch - sim_time)))
+                        self._phase_end_time = next_switch
+                    except Exception as e:
+                        logger.warning(f"Error applying WE green duration on phase transition: {e}")
+                elif phase_id == 2 and self._pending_ns_green is not None:
+                    try:
+                        traci.trafficlight.setPhaseDuration(tls_id, float(self._pending_ns_green))
+                        self._duration_applied_for_phase = 2
+                        next_switch = float(traci.trafficlight.getNextSwitch(tls_id))
+                        remaining_time = max(0, int(round(next_switch - sim_time)))
+                        self._phase_end_time = next_switch
+                    except Exception as e:
+                        logger.warning(f"Error applying NS green duration on phase transition: {e}")
+
+                logger.info(
+                    f"[SUMO_SIGNAL_PHASE_EVENT] sim_time={sim_time:.1f}s | signal_id=TLS-{tls_id} | "
+                    f"prev_phase={prev_phase} -> new_phase={phase_id} | phase_start_time={self._phase_start_time:.1f}s | "
+                    f"phase_end_time={self._phase_end_time:.1f}s | remaining_time={remaining_time}s | "
+                    f"decision_id={self._current_decision_id} | reason='SUMO phase transition' | source='sumo_simulation'"
+                )
+
             if phase_state.startswith("GGG"):
                 current_signal_phase = "WE GREEN"
             elif phase_state.startswith("yyy"):
@@ -293,15 +373,67 @@ class SumoTrafficProvider(TrafficStateProvider):
         if len(self._dataset_rows) > 20:
             self._dataset_rows.pop()
 
-        # Signal state representation
+        # Signal state representation from SUMO authoritative phase
         ns_state = "GREEN" if "NS GREEN" in current_signal_phase else ("YELLOW" if "NS YELLOW" in current_signal_phase else "RED")
         we_state = "GREEN" if "WE GREEN" in current_signal_phase else ("YELLOW" if "WE YELLOW" in current_signal_phase else "RED")
 
         signals_data = [
-            SignalHeadState(signal_id="SIG-N1", direction="North", state=ns_state, timer_remaining=15, mode="AI-Optimized"),
-            SignalHeadState(signal_id="SIG-S1", direction="South", state=ns_state, timer_remaining=15, mode="AI-Optimized"),
-            SignalHeadState(signal_id="SIG-E1", direction="East", state=we_state, timer_remaining=15, mode="AI-Optimized"),
-            SignalHeadState(signal_id="SIG-W1", direction="West", state=we_state, timer_remaining=15, mode="AI-Optimized"),
+            SignalHeadState(
+                signal_id="SIG-N1",
+                direction="North",
+                state=ns_state,
+                phase_id=phase_id,
+                phase_start_time=self._phase_start_time,
+                phase_end_time=self._phase_end_time,
+                remaining_time=remaining_time,
+                simulation_time=sim_time,
+                decision_id=self._current_decision_id,
+                timestamp=now_str,
+                timer_remaining=remaining_time,
+                mode="AI-Adaptive"
+            ),
+            SignalHeadState(
+                signal_id="SIG-S1",
+                direction="South",
+                state=ns_state,
+                phase_id=phase_id,
+                phase_start_time=self._phase_start_time,
+                phase_end_time=self._phase_end_time,
+                remaining_time=remaining_time,
+                simulation_time=sim_time,
+                decision_id=self._current_decision_id,
+                timestamp=now_str,
+                timer_remaining=remaining_time,
+                mode="AI-Adaptive"
+            ),
+            SignalHeadState(
+                signal_id="SIG-E1",
+                direction="East",
+                state=we_state,
+                phase_id=phase_id,
+                phase_start_time=self._phase_start_time,
+                phase_end_time=self._phase_end_time,
+                remaining_time=remaining_time,
+                simulation_time=sim_time,
+                decision_id=self._current_decision_id,
+                timestamp=now_str,
+                timer_remaining=remaining_time,
+                mode="AI-Adaptive"
+            ),
+            SignalHeadState(
+                signal_id="SIG-W1",
+                direction="West",
+                state=we_state,
+                phase_id=phase_id,
+                phase_start_time=self._phase_start_time,
+                phase_end_time=self._phase_end_time,
+                remaining_time=remaining_time,
+                simulation_time=sim_time,
+                decision_id=self._current_decision_id,
+                timestamp=now_str,
+                timer_remaining=remaining_time,
+                mode="AI-Adaptive"
+            ),
         ]
 
         # Extract volume & speed series for Recharts

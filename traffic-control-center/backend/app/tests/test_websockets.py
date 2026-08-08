@@ -12,6 +12,18 @@ def test_websocket_channels():
         assert "signals" in data
         assert "source" in data
         assert "confidence" in data
+        assert len(data["signals"]) == 4
+
+        first_sig = data["signals"][0]
+        assert "signal_id" in first_sig
+        assert "direction" in first_sig
+        assert "state" in first_sig
+        assert "phase_id" in first_sig
+        assert "phase_start_time" in first_sig
+        assert "phase_end_time" in first_sig
+        assert "remaining_time" in first_sig
+        assert "simulation_time" in first_sig
+        assert "timestamp" in first_sig
 
     print("Testing /ws/logs WebSocket channel...")
     with client.websocket_connect("/ws/logs") as websocket:
