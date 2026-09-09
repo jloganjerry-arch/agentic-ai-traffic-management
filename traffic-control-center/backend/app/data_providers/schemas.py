@@ -17,6 +17,24 @@ class OverviewState(BaseModel):
     emergency_vehicle_count: int = Field(0, description="Total active emergency vehicles")
     current_congestion: str = Field("Low", description="Overall junction congestion status")
     current_signal_phase: str = Field("NS GREEN", description="Active traffic signal phase")
+    signal_mode: str = Field("paired_corridor", description="Active signal sequencing mode: 'paired_corridor' (2-phase) or 'one_by_one' (4-phase)")
+    active_scenario: str = Field("normal", description="Active traffic scenario preset: normal, rush_hour, emergency_corridor, accident_blockage, weather_hazard")
+    scenario_impact: str = Field("Nominal baseline conditions across junction", description="Live AI explanation of scenario impact")
+    adaptive_status: str = Field("DYNAMIC_GLIDE_OPTIMIZED", description="Adaptive timing status")
+    adaptive_event: str = Field("", description="Latest environmental adaptive decision")
+
+class VehicleState(BaseModel):
+    id: str = Field(..., description="Vehicle ID")
+    speed_kmh: float = Field(0.0, description="Speed in km/h")
+    waiting_time_s: float = Field(0.0, description="Waiting time in seconds")
+    vehicle_type: str = Field("passenger", description="Vehicle type (sedan, truck, bus, emergency)")
+    edge_id: str = Field("", description="SUMO edge ID")
+    lane_id: str = Field("", description="SUMO lane ID")
+    x: float = Field(0.0, description="SUMO X coordinate")
+    y: float = Field(0.0, description="SUMO Y coordinate")
+    angle: float = Field(0.0, description="Vehicle heading angle in degrees")
+    direction: str = Field("North", description="Approach direction (North, South, East, West)")
+    status: str = Field("Moving", description="Moving or Queued")
 
 class ApproachState(BaseModel):
     approach: str = Field(..., description="Approach identifier (North, South, East, West)")
@@ -25,12 +43,14 @@ class ApproachState(BaseModel):
     queue_len: float = Field(..., description="Queue length in meters")
     density: float = Field(..., description="Density in veh/km")
     status: str = Field(..., description="Operational status (Optimal, Moderate, Congested)")
+    vehicles: List[VehicleState] = Field(default_factory=list, description="List of active vehicles on approach")
 
 class ApproachListResponse(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
     source: str = Field("sumo_simulation")
     confidence: str = Field("exact")
     approaches: List[ApproachState]
+    vehicles: List[VehicleState] = Field(default_factory=list, description="All active vehicles across junction")
 
 class SignalHeadState(BaseModel):
     signal_id: str = Field(..., description="Signal head hardware ID")
@@ -45,6 +65,8 @@ class SignalHeadState(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
     timer_remaining: int = Field(0, description="Remaining seconds in phase")
     mode: str = Field("AI-Adaptive", description="Control mode (AI-Optimized, Manual, Fixed)")
+    adaptive_action: str = Field("NOMINAL", description="Current adaptive action: EXTENDING, GAP_OUT, HOLD, NOMINAL")
+    adaptive_reason: str = Field("", description="Environmental reason for adaptive adjustment")
 
 class SignalListResponse(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
@@ -88,3 +110,30 @@ class TrafficState(BaseModel):
     signals: List[SignalHeadState]
     trends: TrendData
     hardware_status: List[HardwareNodeState]
+
+class ScenarioInjectRequest(BaseModel):
+    scenario: str = Field(..., description="Scenario type: normal, rush_hour, emergency_corridor, accident_blockage, weather_hazard")
+    approach: Optional[str] = Field("North", description="Target approach if applicable (North, South, East, West)")
+    intensity: Optional[float] = Field(1.0, description="Multiplier for traffic surge or weather severity (0.5 to 3.0)")
+    details: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional scenario configuration")
+
+class ScenarioResponse(BaseModel):
+    status: str = "SUCCESS"
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+    active_scenario: str
+    scenario_label: str
+    description: str
+    ai_response_plan: str
+    affected_approaches: List[str]
+
+class SignalModeRequest(BaseModel):
+    mode: str = Field(..., description="Signal mode: 'paired_corridor' (2-Phase) or 'one_by_one' (4-Phase)")
+
+class SignalModeResponse(BaseModel):
+    status: str = "SUCCESS"
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+    signal_mode: str
+    mode_label: str
+    description: str
+    active_phase: str
+

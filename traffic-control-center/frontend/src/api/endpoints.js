@@ -8,4 +8,8 @@ export const ENDPOINTS = {
   HARDWARE: '/hardware',
   LOGS: '/logs',
   DECISION: '/decision',
+  PREDICTIONS: '/predictions',
+  EMERGENCY_CORRIDOR: '/signals/emergency-corridor',
+  ADAPTIVE_MODE: '/signals/adaptive-mode',
+  SIGNAL_MODE: '/signals/mode',
 };

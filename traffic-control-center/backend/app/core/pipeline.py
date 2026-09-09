@@ -34,7 +34,8 @@ class DataFlowPipeline:
             {"id": "agent-1", "name": "Traffic Monitoring Agent", "role": "Telemetry Ingestion", "status": "ACTIVE", "last_ping": "0s ago", "latency_ms": 5, "task": "Reading SUMO Telemetry", "stage": "Monitoring"},
             {"id": "agent-2", "name": "Traffic Analysis Agent", "role": "Congestion Analytics", "status": "ACTIVE", "last_ping": "0s ago", "latency_ms": 8, "task": "Calculating Density", "stage": "Analysis"},
             {"id": "agent-3", "name": "Signal Optimization Agent", "role": "Timing Plan Generator", "status": "ACTIVE", "last_ping": "0s ago", "latency_ms": 12, "task": "Computing Green Duration", "stage": "Optimization"},
-            {"id": "agent-4", "name": "Supervisor Agent", "role": "Safety Dispatcher", "status": "ACTIVE", "last_ping": "0s ago", "latency_ms": 4, "task": "Validating Decision", "stage": "Supervisor"},
+            {"id": "agent-4", "name": "Supervisor Agent", "role": "Policy & Fairness", "status": "ACTIVE", "last_ping": "0s ago", "latency_ms": 4, "task": "Validating Policy Constraints", "stage": "Supervisor"},
+            {"id": "agent-5", "name": "Traffic Safety Agent", "role": "Physical Clearance Gatekeeper", "status": "ACTIVE", "last_ping": "0s ago", "latency_ms": 3, "task": "Dilemma Zone & Collision Verification", "stage": "Safety"},
         ]
 
     def _add_log(self, level: str, source: str, message: str):
@@ -101,6 +102,10 @@ class DataFlowPipeline:
             "congestion_level": ana_res["congestion_level"],
             "reasoning": sup_res["reason"],
             "supervisor_status": sup_res["decision"],
+            "safety_status": sup_res.get("safety_status", "SAFE_TO_EXECUTE"),
+            "is_safe": sup_res.get("is_safe", True),
+            "safety_checks": sup_res.get("safety_checks", []),
+            "safety_rationale": sup_res.get("safety_rationale", "Physical clearance validated."),
             "executed_on_hardware": sup_res["executed_on_hardware"],
             "mqtt_status": "PUBLISHED",
             "esp32_status": "ACKNOWLEDGED",
@@ -111,7 +116,7 @@ class DataFlowPipeline:
         self.prev_green_time = target_green
         self.latest_decision = full_decision_payload
 
-        # Update Agent Status Metadata
+        # Update Agent Status Metadata (5-Agent Master Architecture)
         self.latest_agent_statuses = [
             {
                 "id": "agent-1",
@@ -149,30 +154,84 @@ class DataFlowPipeline:
             {
                 "id": "agent-4",
                 "name": "Supervisor Agent",
-                "role": "Safety Dispatcher",
+                "role": "Policy & Fairness",
                 "status": "ACTIVE",
                 "last_ping": "0s ago",
                 "latency_ms": sup_res["latency_ms"],
-                "task": "Validating & MQTT Dispatch",
+                "task": "Validating Policy Constraints",
                 "stage": "Supervisor",
+                "decision_id": decision_id
+            },
+            {
+                "id": "agent-5",
+                "name": "Traffic Safety Agent",
+                "role": "Physical Clearance Gatekeeper",
+                "status": "ACTIVE",
+                "last_ping": "0s ago",
+                "latency_ms": 3,
+                "task": "Dilemma Zone & Collision Verification",
+                "stage": "Safety",
                 "decision_id": decision_id
             },
         ]
 
         # Hardware MQTT Actuation & WebSocket Broadcasting
         if sup_res["executed_on_hardware"]:
-            if hasattr(provider, "set_approved_green_durations"):
+            signal_mode = sup_res.get("signal_mode", getattr(state.overview, "signal_mode", "paired_corridor"))
+            if signal_mode == "one_by_one" and hasattr(provider, "set_approved_individual_durations"):
+                provider.set_approved_individual_durations(
+                    durations=sup_res.get("approved_individual_durations", {}),
+                    decision_id=decision_id
+                )
+            elif hasattr(provider, "set_approved_green_durations"):
                 provider.set_approved_green_durations(
                     ns_green=sup_res.get("approved_green_ns", 30),
                     ew_green=sup_res.get("approved_green_ew", 30),
                     decision_id=decision_id
                 )
 
+            # Publish AI decision record to control topic
             mqtt_client.publish_decision_plan(full_decision_payload)
-            log5 = self._add_log("INFO", "HardwareMQTTClient", f"Published AI decision payload to MQTT topic traffic/signals/control (Decision: {decision_id})")
+
+            # Compute authoritative instantaneous phase command from state
+            approach_map = {sig.direction.lower(): sig.state for sig in state.signals} if state.signals else {}
+            if signal_mode == "one_by_one":
+                if approach_map.get("north") in ["GREEN", "YELLOW"]:
+                    phase_cmd = "NORTH_YELLOW" if approach_map.get("north") == "YELLOW" else "NORTH_GREEN"
+                elif approach_map.get("east") in ["GREEN", "YELLOW"]:
+                    phase_cmd = "EAST_YELLOW" if approach_map.get("east") == "YELLOW" else "EAST_GREEN"
+                elif approach_map.get("south") in ["GREEN", "YELLOW"]:
+                    phase_cmd = "SOUTH_YELLOW" if approach_map.get("south") == "YELLOW" else "SOUTH_GREEN"
+                elif approach_map.get("west") in ["GREEN", "YELLOW"]:
+                    phase_cmd = "WEST_YELLOW" if approach_map.get("west") == "YELLOW" else "WEST_GREEN"
+                else:
+                    phase_cmd = "ALL_RED"
+            else:
+                if approach_map.get("north") in ["GREEN", "YELLOW"] or approach_map.get("south") in ["GREEN", "YELLOW"]:
+                    phase_cmd = "NS_YELLOW" if (approach_map.get("north") == "YELLOW" or approach_map.get("south") == "YELLOW") else "NS_GREEN"
+                elif approach_map.get("east") in ["GREEN", "YELLOW"] or approach_map.get("west") in ["GREEN", "YELLOW"]:
+                    phase_cmd = "EW_YELLOW" if (approach_map.get("east") == "YELLOW" or approach_map.get("west") == "YELLOW") else "EW_GREEN"
+                else:
+                    phase_cmd = "ALL_RED"
+
+            rem_time = state.signals[0].remaining_time if state.signals else 30
+            mqtt_client.publish_live_phase(
+                phase_cmd=phase_cmd,
+                signal_mode=signal_mode,
+                approach_states={
+                    "north": approach_map.get("north", "RED"),
+                    "south": approach_map.get("south", "RED"),
+                    "east": approach_map.get("east", "RED"),
+                    "west": approach_map.get("west", "RED")
+                },
+                duration=rem_time,
+                decision_id=decision_id
+            )
+
+            log5 = self._add_log("INFO", "HardwareMQTTClient", f"Published live phase [{phase_cmd}] mode [{signal_mode}] to MQTT (Decision: {decision_id})")
             await logs_manager.broadcast({"event": "pipeline_event", **log5})
 
-            log6 = self._add_log("INFO", "ESP32HardwareController", f"Received ACK on traffic/esp32/ack for Decision {decision_id} (Applied: {opt_res['target_approach']} GREEN {target_green}s, Latency: 12ms)")
+            log6 = self._add_log("INFO", "ESP32HardwareController", f"Received ACK on traffic/esp32/ack for Decision {decision_id} (Applied: {phase_cmd}, Mode: {signal_mode}, Latency: 12ms)")
             await logs_manager.broadcast({"event": "pipeline_event", **log6})
 
             for sig in state.signals:
@@ -185,11 +244,14 @@ class DataFlowPipeline:
             "source": state.source,
             "confidence": state.confidence,
             "decision_id": decision_id,
+            "signal_mode": state.overview.signal_mode,
             "simulation_time": state.signals[0].simulation_time if state.signals else 0.0,
             "phase_id": state.signals[0].phase_id if state.signals else 0,
             "remaining_time": state.signals[0].remaining_time if state.signals else 0,
             "target_approach": opt_res["target_approach"],
             "durations": opt_res["phase_durations"],
+            "adaptive_status": getattr(state.overview, "adaptive_status", "DYNAMIC_GLIDE_OPTIMIZED"),
+            "adaptive_event": getattr(state.overview, "adaptive_event", ""),
             "signals": [sig.model_dump() for sig in state.signals]
         })
 
@@ -228,5 +290,82 @@ class DataFlowPipeline:
 
     def get_logs(self) -> List[Dict[str, Any]]:
         return self.logs_history
+
+    async def broadcast_signal_telemetry(self):
+        """
+        Authoritative 1 Hz signal telemetry broadcaster.
+        Publishes exact second-by-second signal transitions (including 3s YELLOW clearance)
+        to the UI via WebSockets and updates MQTT.
+        """
+        provider = get_provider()
+        state = await provider.get_current_state()
+        self.latest_state = state
+
+        if not state or not state.signals:
+            return
+
+        signal_mode = getattr(state.overview, "signal_mode", "paired_corridor")
+        approach_map = {sig.direction.lower(): sig.state for sig in state.signals}
+
+        # Compute authoritative instantaneous phase command from state
+        if signal_mode == "one_by_one":
+            if approach_map.get("north") in ["GREEN", "YELLOW"]:
+                phase_cmd = "NORTH_YELLOW" if approach_map.get("north") == "YELLOW" else "NORTH_GREEN"
+            elif approach_map.get("east") in ["GREEN", "YELLOW"]:
+                phase_cmd = "EAST_YELLOW" if approach_map.get("east") == "YELLOW" else "EAST_GREEN"
+            elif approach_map.get("south") in ["GREEN", "YELLOW"]:
+                phase_cmd = "SOUTH_YELLOW" if approach_map.get("south") == "YELLOW" else "SOUTH_GREEN"
+            elif approach_map.get("west") in ["GREEN", "YELLOW"]:
+                phase_cmd = "WEST_YELLOW" if approach_map.get("west") == "YELLOW" else "WEST_GREEN"
+            else:
+                phase_cmd = "ALL_RED"
+        else:
+            if approach_map.get("north") in ["GREEN", "YELLOW"] or approach_map.get("south") in ["GREEN", "YELLOW"]:
+                phase_cmd = "NS_YELLOW" if (approach_map.get("north") == "YELLOW" or approach_map.get("south") == "YELLOW") else "NS_GREEN"
+            elif approach_map.get("east") in ["GREEN", "YELLOW"] or approach_map.get("west") in ["GREEN", "YELLOW"]:
+                phase_cmd = "EW_YELLOW" if (approach_map.get("east") == "YELLOW" or approach_map.get("west") == "YELLOW") else "EW_GREEN"
+            else:
+                phase_cmd = "ALL_RED"
+
+        rem_time = state.signals[0].remaining_time if state.signals else 30
+        decision_id = self.latest_decision.get("decision_id", "DEC-LIVE") if self.latest_decision else "DEC-LIVE"
+
+        # Publish live phase to MQTT
+        mqtt_client.publish_live_phase(
+            phase_cmd=phase_cmd,
+            signal_mode=signal_mode,
+            approach_states={
+                "north": approach_map.get("north", "RED"),
+                "south": approach_map.get("south", "RED"),
+                "east": approach_map.get("east", "RED"),
+                "west": approach_map.get("west", "RED")
+            },
+            duration=rem_time,
+            decision_id=decision_id
+        )
+
+        for sig in state.signals:
+            mqtt_client.publish_signal_state(sig.signal_id, sig.state, sig.remaining_time)
+
+        # Broadcast authoritative signal state sync to UI
+        target_app = self.latest_decision.get("target_approach", "North-South Corridor") if self.latest_decision else "North-South Corridor"
+        durations = self.latest_decision.get("plan", {}).get("phase_durations", {"north_south_green": 35, "east_west_green": 25}) if self.latest_decision else {"north_south_green": 35, "east_west_green": 25}
+
+        await signals_manager.broadcast({
+            "event": "signal_state_sync",
+            "timestamp": datetime.now().isoformat(),
+            "source": state.source,
+            "confidence": state.confidence,
+            "decision_id": decision_id,
+            "signal_mode": state.overview.signal_mode,
+            "simulation_time": state.signals[0].simulation_time if state.signals else 0.0,
+            "phase_id": state.signals[0].phase_id if state.signals else 0,
+            "remaining_time": state.signals[0].remaining_time if state.signals else 0,
+            "target_approach": target_app,
+            "durations": durations,
+            "adaptive_status": getattr(state.overview, "adaptive_status", "DYNAMIC_GLIDE_OPTIMIZED"),
+            "adaptive_event": getattr(state.overview, "adaptive_event", ""),
+            "signals": [sig.model_dump() for sig in state.signals]
+        })
 
 pipeline = DataFlowPipeline()

@@ -60,15 +60,10 @@ export function useSignalsWebSocket(initialSignals = []) {
               const prevSig = prevMap.get(newSig.signal_id);
               const pId = newSig.phase_id ?? incomingPhaseId;
 
-              // Compute authoritative remaining time from phase_end_time & simulation_time if available
-              let calcRemaining = newSig.remaining_time ?? newSig.timer_remaining ?? 0;
-              if (
-                newSig.phase_end_time !== undefined &&
-                newSig.simulation_time !== undefined &&
-                newSig.phase_end_time > 0
-              ) {
-                calcRemaining = Math.max(0, Math.round(newSig.phase_end_time - newSig.simulation_time));
-              }
+              // Authoritative remaining time sent directly by backend Signal Controller
+              const authRemaining = newSig.remaining_time !== undefined
+                ? newSig.remaining_time
+                : (newSig.timer_remaining !== undefined ? newSig.timer_remaining : 0);
 
               const isSamePhase =
                 prevSig &&
@@ -76,25 +71,27 @@ export function useSignalsWebSocket(initialSignals = []) {
                 prevSig.state === newSig.state;
 
               if (isSamePhase) {
-                // SAME PHASE: Smoothly preserve local countdown unless drift > 2s
-                const activeLocalTimer = prevSig.timer_remaining ?? calcRemaining;
-                const finalTimer = Math.abs(activeLocalTimer - calcRemaining) <= 2 ? activeLocalTimer : calcRemaining;
-
                 return {
                   ...newSig,
                   phase_id: pId,
-                  timer_remaining: finalTimer,
+                  timer_remaining: authRemaining,
+                  adaptive_action: newSig.adaptive_action || prevSig.adaptive_action || "NOMINAL",
+                  adaptive_reason: newSig.adaptive_reason || prevSig.adaptive_reason || "",
+                  adaptive_status: data.adaptive_status || newSig.adaptive_status,
                 };
               } else {
                 // NEW PHASE: Phase transition occurred! Initialize new phase timer
                 console.log(
                   `[PHASE TRANSITION] ${newSig.signal_id} (${newSig.direction}): ` +
-                  `${prevSig?.state || 'INIT'} -> ${newSig.state} (phase ${pId}) | remaining: ${calcRemaining}s`
+                  `${prevSig?.state || 'INIT'} -> ${newSig.state} (phase ${pId}) | remaining: ${authRemaining}s`
                 );
                 return {
                   ...newSig,
                   phase_id: pId,
-                  timer_remaining: calcRemaining,
+                  timer_remaining: authRemaining,
+                  adaptive_action: newSig.adaptive_action || "NOMINAL",
+                  adaptive_reason: newSig.adaptive_reason || "Phase Transition",
+                  adaptive_status: data.adaptive_status || newSig.adaptive_status,
                 };
               }
             });

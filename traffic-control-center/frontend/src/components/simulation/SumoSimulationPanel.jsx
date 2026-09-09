@@ -1,108 +1,155 @@
 import React, { useState, useEffect } from 'react';
+import axios from 'axios';
 import { SectionCard } from '../layout/SectionCard';
+import { IntersectionRenderer } from './IntersectionRenderer';
+import { SimulationHUD } from './SimulationHUD';
+import { VehicleDetailModal } from './VehicleDetailModal';
+
 import { useApproachData } from '../../api/queries/useApproachData';
 import { useSignalStatus } from '../../api/queries/useSignalStatus';
 import { useSignalsWebSocket } from '../../hooks/useSignalsWebSocket';
 import { useTrafficOverview } from '../../api/queries/useTrafficOverview';
-import { MonitorPlay, Play, Pause, RefreshCw, FastForward, Activity } from 'lucide-react';
+import { useAgentStatus } from '../../api/queries/useAgentStatus';
+import { useHardwareStatus } from '../../api/queries/useHardwareStatus';
+import { useScenarioStore } from '../../store/scenarioStore';
+import { useEmergencyControl } from '../../api/queries/useEmergencyControl';
 
+import { 
+  MonitorPlay, 
+  Play, 
+  Pause, 
+  RefreshCw, 
+  FastForward, 
+  Siren, 
+  Truck, 
+  ShieldAlert, 
+  Zap, 
+  Layers, 
+  CheckCircle2 
+} from 'lucide-react';
+
+/**
+ * SumoSimulationPanel - State-of-the-Art Smart City Simulation Control Center.
+ * Integrates 4-Phase Isolated / 2-Phase Signal Mode switcher, direct Emergency Vehicle Dispatch
+ * (Ambulance, Fire Truck, Police), 60 FPS vector canvas, real-time TraCI telemetry, and HUD.
+ */
 export function SumoSimulationPanel() {
   const [isPlaying, setIsPlaying] = useState(true);
   const [simSpeed, setSimSpeed] = useState(1);
   const [tick, setTick] = useState(0);
+  const [selectedVehicle, setSelectedVehicle] = useState(null);
 
   const { data: approachesResponse } = useApproachData();
   const approaches = approachesResponse?.approaches || (Array.isArray(approachesResponse) ? approachesResponse : []);
+  const telemetryVehicles = React.useMemo(() => {
+    if (approachesResponse?.vehicles && Array.isArray(approachesResponse.vehicles) && approachesResponse.vehicles.length > 0) {
+      return approachesResponse.vehicles;
+    }
+    if (Array.isArray(approaches) && approaches.length > 0) {
+      const extracted = [];
+      approaches.forEach(app => {
+        if (app.vehicles && Array.isArray(app.vehicles)) {
+          extracted.push(...app.vehicles);
+        }
+      });
+      return extracted;
+    }
+    return [];
+  }, [approachesResponse, approaches]);
+
   const { data: initialSignalsResponse } = useSignalStatus();
   const initialSignals = initialSignalsResponse?.signals || (Array.isArray(initialSignalsResponse) ? initialSignalsResponse : []);
   const signals = useSignalsWebSocket(initialSignals);
-  const { data: overview } = useTrafficOverview();
 
-  // Animation loop for vehicle particle movement along SVG lanes
+  const { data: overview, refetch: refetchOverview } = useTrafficOverview();
+  const { data: agentStatusResponse } = useAgentStatus();
+  const agentStatus = agentStatusResponse?.agent_status || (Array.isArray(agentStatusResponse) ? agentStatusResponse : []);
+  const { data: hardwareResponse } = useHardwareStatus();
+  const hardwareStatus = hardwareResponse?.hardware_status || (Array.isArray(hardwareResponse) ? hardwareResponse : []);
+
+  const { 
+    activeScenario, 
+    scenarioApproach, 
+    emergencyVehicleType, 
+    emergencyActive, 
+    emergencyRoute, 
+    signalMode, 
+    setSignalMode, 
+    setEmergencyDispatch, 
+    setScenario 
+  } = useScenarioStore();
+
+  const { triggerEmergencyCorridor } = useEmergencyControl();
+
+  // Animation Frame Tick Loop for smooth micro-movements
   useEffect(() => {
     if (!isPlaying) return;
     const interval = setInterval(() => {
       setTick((t) => (t + 1) % 1000);
-    }, 50 / simSpeed);
+    }, 40 / simSpeed);
     return () => clearInterval(interval);
   }, [isPlaying, simSpeed]);
 
-  const getSignalState = (dir) => {
-    const sig = signals.find((s) => s.direction?.toLowerCase() === dir.toLowerCase());
-    return sig?.state || 'GREEN';
-  };
-
-  const getSignalColor = (dir) => {
-    const state = getSignalState(dir);
-    return state === 'RED' ? '#EF4444' : state === 'YELLOW' ? '#F59E0B' : '#10B981';
-  };
-
-  const northVehCount = approaches.find((a) => a.approach?.includes('North'))?.vehicle_count || 12;
-  const southVehCount = approaches.find((a) => a.approach?.includes('South'))?.vehicle_count || 15;
-  const eastVehCount = approaches.find((a) => a.approach?.includes('East'))?.vehicle_count || 9;
-  const westVehCount = approaches.find((a) => a.approach?.includes('West'))?.vehicle_count || 10;
-
-  // Generate dynamic vehicle positions based on approach counts, animation tick, and signal state
-  const renderVehicles = (count, direction) => {
-    const items = [];
-    const maxCount = Math.min(count, 10);
-    const state = getSignalState(direction);
-    const isRed = state === 'RED';
-
-    for (let i = 0; i < maxCount; i++) {
-      let offset;
-      if (isRed) {
-        // When signal is RED, vehicles queue up behind the stop bar (offset 155 - i * 14)
-        const stopPos = 155 - (i * 15);
-        const movingOffset = ((tick * 0.5 + i * 35) % 180) + 15;
-        // Vehicles advance until they reach their queue spot at the stop bar
-        offset = Math.min(stopPos, movingOffset);
-      } else {
-        // When signal is GREEN, vehicles flow continuously across the entire junction corridor
-        offset = ((tick * (0.6 + (i % 3) * 0.08) + i * 35) % 360) + 20;
-      }
-
-      let cx = 200, cy = 200;
-
-      if (direction === 'North') {
-        cx = 190;
-        cy = offset;
-      } else if (direction === 'South') {
-        cx = 210;
-        cy = 400 - offset;
-      } else if (direction === 'East') {
-        cx = 400 - offset;
-        cy = 190;
-      } else if (direction === 'West') {
-        cx = offset;
-        cy = 210;
-      }
-
-      // Hide vehicles that move far off canvas during GREEN flow
-      if (offset > 380) continue;
-
-      items.push(
-        <circle
-          key={`${direction}-${i}`}
-          cx={cx}
-          cy={cy}
-          r="4.5"
-          className={direction === 'North' || direction === 'South' ? 'fill-cyan-400' : 'fill-blue-400'}
-          style={{ filter: 'drop-shadow(0 0 4px rgba(34, 211, 238, 0.8))' }}
-        />
-      );
+  // Toggle between 4-Phase (1-by-1) and 2-Phase (Paired) mode
+  const handleToggleSignalMode = async (newMode) => {
+    setSignalMode(newMode);
+    try {
+      await axios.post('/api/signals/mode', { mode: newMode });
+      refetchOverview();
+    } catch (err) {
+      console.warn('Backend signal mode update:', err);
     }
-    return items;
+  };
+
+  // Quick Dispatch for specific Emergency Vehicles
+  const handleQuickEmergencyDispatch = async (vType) => {
+    const route = emergencyRoute || 'North-South';
+    const nextActive = !emergencyActive || emergencyVehicleType !== vType;
+
+    setEmergencyDispatch(vType, route, nextActive);
+
+    triggerEmergencyCorridor.mutate({
+      active: nextActive,
+      direction: route,
+      vehicle_type: vType
+    });
   };
 
   return (
     <SectionCard
-      title="Live Network Geometry & Simulation Feed (Section 2)"
+      title="Live Network Geometry & Simulation Feed (Smart City Control)"
       icon={MonitorPlay}
       action={
-        <div className="flex items-center space-x-3">
-          {/* Simulation Control Bar */}
-          <div className="flex items-center space-x-1.5 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800 text-xs">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* 1. Signal Sequencing Mode Toggle (4-Phase vs 2-Phase) */}
+          <div className="flex items-center bg-slate-950 px-1.5 py-1 rounded-lg border border-slate-800 text-xs font-mono">
+            <span className="text-slate-500 mr-2 text-[10px] hidden lg:inline">MODE:</span>
+            <button
+              onClick={() => handleToggleSignalMode('one_by_one')}
+              className={`px-2 py-0.5 rounded text-[10px] font-bold transition flex items-center space-x-1 ${
+                (signalMode === 'one_by_one' || overview?.signal_mode === 'one_by_one')
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="4-Phase (1-by-1): Only the green junction goes right, left, straight; others wait"
+            >
+              <span>4-Phase (1-by-1)</span>
+            </button>
+            <button
+              onClick={() => handleToggleSignalMode('paired_corridor')}
+              className={`px-2 py-0.5 rounded text-[10px] font-bold transition flex items-center space-x-1 ml-1 ${
+                (signalMode !== 'one_by_one' && overview?.signal_mode !== 'one_by_one')
+                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="2-Phase: Paired Corridors (North+South & East+West)"
+            >
+              <span>2-Phase (Paired)</span>
+            </button>
+          </div>
+
+          {/* 2. Simulation Speed & Playback Toolbar */}
+          <div className="flex items-center space-x-1 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800 text-xs font-mono">
             <button
               onClick={() => setIsPlaying(!isPlaying)}
               className="p-1 hover:bg-slate-800 rounded text-cyan-400 transition"
@@ -120,86 +167,104 @@ export function SumoSimulationPanel() {
             <button
               onClick={() => { setTick(0); setIsPlaying(true); }}
               className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-slate-200 transition"
-              title="Reset View"
+              title="Reset Simulation View"
             >
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
           </div>
-
-          <span className="hidden sm:inline-block text-[11px] font-mono text-slate-400 bg-slate-900 px-2.5 py-1 rounded border border-slate-800">
-            Source: <span className="text-cyan-400 font-semibold">{overview?.source || 'sumo_simulation'}</span> ({overview?.confidence || 'exact'})
-          </span>
         </div>
       }
     >
-      <div className="h-[360px] rounded-xl bg-[#080D1A] border border-slate-800/80 relative flex items-center justify-center overflow-hidden shadow-inner">
-        {/* Subtle Background Grid Pattern */}
-        <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:20px_20px] opacity-30"></div>
-
-        {/* SVG Network Geometry Renderer */}
-        <svg viewBox="0 0 400 400" className="w-full h-full max-w-[500px]">
-          {/* Background Surface */}
-          <rect width="400" height="400" fill="#080D1A" />
-
-          {/* Road Network Corridors */}
-          {/* North-South Road */}
-          <rect x="170" y="0" width="60" height="400" fill="#111827" stroke="#1E293B" strokeWidth="1" />
-          {/* East-West Road */}
-          <rect x="0" y="170" width="400" height="60" fill="#111827" stroke="#1E293B" strokeWidth="1" />
-
-          {/* Junction Core Box */}
-          <rect x="170" y="170" width="60" height="60" fill="#1F293D" stroke="#334155" strokeWidth="1.5" />
-
-          {/* Lane Centerlines (Dashed Yellow/White) */}
-          <line x1="200" y1="0" x2="200" y2="170" stroke="#F59E0B" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.6" />
-          <line x1="200" y1="230" x2="200" y2="400" stroke="#F59E0B" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.6" />
-          <line x1="0" y1="200" x2="170" y2="200" stroke="#F59E0B" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.6" />
-          <line x1="230" y1="200" x2="400" y2="200" stroke="#F59E0B" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.6" />
-
-          {/* Stop Bars */}
-          <line x1="170" y1="170" x2="200" y2="170" stroke="#F8FAFC" strokeWidth="3" opacity="0.8" />
-          <line x1="200" y1="230" x2="230" y2="230" stroke="#F8FAFC" strokeWidth="3" opacity="0.8" />
-          <line x1="170" y1="200" x2="170" y2="230" stroke="#F8FAFC" strokeWidth="3" opacity="0.8" />
-          <line x1="230" y1="170" x2="230" y2="200" stroke="#F8FAFC" strokeWidth="3" opacity="0.8" />
-
-          {/* Signal Heads (Physical Signal LED Indicators) */}
-          {/* North Signal Head */}
-          <circle cx="162" cy="162" r="7" fill={getSignalColor('North')} style={{ filter: `drop-shadow(0 0 6px ${getSignalColor('North')})` }} />
-          {/* South Signal Head */}
-          <circle cx="238" cy="238" r="7" fill={getSignalColor('South')} style={{ filter: `drop-shadow(0 0 6px ${getSignalColor('South')})` }} />
-          {/* East Signal Head */}
-          <circle cx="238" cy="162" r="7" fill={getSignalColor('East')} style={{ filter: `drop-shadow(0 0 6px ${getSignalColor('East')})` }} />
-          {/* West Signal Head */}
-          <circle cx="162" cy="238" r="7" fill={getSignalColor('West')} style={{ filter: `drop-shadow(0 0 6px ${getSignalColor('West')})` }} />
-
-          {/* Central Junction Marker */}
-          <circle cx="200" cy="200" r="18" fill="none" stroke="#22D3EE" strokeWidth="1.5" strokeDasharray="4 2" className="animate-spin" style={{ animationDuration: '10s' }} />
-          <text x="200" y="204" textAnchor="middle" fill="#22D3EE" fontSize="9" className="font-mono font-bold">J1-HUB</text>
-
-          {/* Direction Labels */}
-          <text x="200" y="25" textAnchor="middle" fill="#94A3B8" fontSize="10" className="font-mono">NORTH</text>
-          <text x="200" y="385" textAnchor="middle" fill="#94A3B8" fontSize="10" className="font-mono">SOUTH</text>
-          <text x="375" y="204" textAnchor="middle" fill="#94A3B8" fontSize="10" className="font-mono">EAST</text>
-          <text x="25" y="204" textAnchor="middle" fill="#94A3B8" fontSize="10" className="font-mono">WEST</text>
-
-          {/* Dynamic Animated Vehicles */}
-          {renderVehicles(northVehCount, 'North')}
-          {renderVehicles(southVehCount, 'South')}
-          {renderVehicles(eastVehCount, 'East')}
-          {renderVehicles(westVehCount, 'West')}
-        </svg>
-
-        {/* Dynamic Telemetry Status Overlay */}
-        <div className="absolute bottom-3 left-3 bg-slate-900/90 px-3 py-2 rounded-lg border border-slate-800 text-xs font-mono flex items-center space-x-3 backdrop-blur">
-          <div className="flex items-center space-x-1.5 text-cyan-400">
-            <Activity className="w-3.5 h-3.5 animate-pulse" />
-            <span className="font-semibold">TraCI Telemetry Active</span>
+      <div className="space-y-3.5">
+        {/* Quick Emergency Dispatch Bar right above Canvas */}
+        <div className="bg-slate-950/80 border border-slate-800/90 rounded-xl p-2.5 flex flex-wrap items-center justify-between gap-2.5 font-mono text-xs">
+          <div className="flex items-center space-x-2">
+            <div className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400">
+              <Siren className="w-4 h-4 animate-pulse" />
+            </div>
+            <span className="text-slate-300 font-bold text-xs">Emergency Green Corridor:</span>
           </div>
-          <div className="h-3 w-px bg-slate-800"></div>
-          <span className="text-slate-400">Active Vehicles: <strong className="text-slate-200">{overview?.total_vehicle_count ?? 142}</strong></span>
-          <div className="hidden md:block h-3 w-px bg-slate-800"></div>
-          <span className="hidden md:inline text-slate-400">FPS: <strong className="text-emerald-400">60</strong></span>
+
+          {/* Direct Emergency Vehicle Buttons */}
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => handleQuickEmergencyDispatch('ambulance')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 border ${
+                emergencyActive && emergencyVehicleType === 'ambulance'
+                  ? 'bg-rose-600 text-white border-rose-400 shadow-[0_0_12px_rgba(239,68,68,0.5)] animate-pulse'
+                  : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border-slate-700'
+              }`}
+            >
+              <span>🚑</span>
+              <span>Ambulance</span>
+            </button>
+
+            <button
+              onClick={() => handleQuickEmergencyDispatch('fire')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 border ${
+                emergencyActive && emergencyVehicleType === 'fire'
+                  ? 'bg-red-600 text-white border-red-400 shadow-[0_0_12px_rgba(220,38,38,0.5)] animate-pulse'
+                  : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border-slate-700'
+              }`}
+            >
+              <span>🚒</span>
+              <span>Fire Truck</span>
+            </button>
+
+            <button
+              onClick={() => handleQuickEmergencyDispatch('police')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 border ${
+                emergencyActive && emergencyVehicleType === 'police'
+                  ? 'bg-blue-600 text-white border-blue-400 shadow-[0_0_12px_rgba(37,99,235,0.5)] animate-pulse'
+                  : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border-slate-700'
+              }`}
+            >
+              <span>🚓</span>
+              <span>Police</span>
+            </button>
+          </div>
+
+          <div className="text-[11px] text-slate-400 hidden sm:block">
+            {emergencyActive ? (
+              <span className="text-emerald-400 font-bold flex items-center space-x-1">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Locked Green Wave • Cross Roads Holding RED</span>
+              </span>
+            ) : (
+              <span>Click vehicle to trigger priority green corridor</span>
+            )}
+          </div>
         </div>
+
+        {/* HUD & Status Bar Banner */}
+        <SimulationHUD
+          overview={overview}
+          signals={signals}
+          agentStatus={agentStatus}
+          hardwareStatus={hardwareStatus}
+        />
+
+        {/* 4-Way Smart City Intersection Visualizer Canvas */}
+        <div className="h-[480px] w-full rounded-2xl relative overflow-hidden flex items-center justify-center border border-slate-800/90 shadow-2xl bg-[#080D1A]">
+          <IntersectionRenderer
+            approaches={approaches}
+            signals={signals}
+            telemetryVehicles={telemetryVehicles}
+            simTick={tick}
+            onSelectVehicle={setSelectedVehicle}
+            selectedVehicleId={selectedVehicle?.id}
+            activeScenario={activeScenario || overview?.active_scenario || 'normal'}
+            scenarioApproach={scenarioApproach || 'North'}
+          />
+        </div>
+
+        {/* Vehicle Detail Telemetry Inspector Modal */}
+        {selectedVehicle && (
+          <VehicleDetailModal
+            vehicle={selectedVehicle}
+            onClose={() => setSelectedVehicle(null)}
+          />
+        )}
       </div>
     </SectionCard>
   );

@@ -13,6 +13,8 @@ from app.api import (
     routes_hardware,
     routes_logs,
     routes_decision,
+    routes_prediction,
+    routes_scenario,
 )
 from app.websocket.live_feed import (
     manager,
@@ -41,7 +43,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Background pipeline task runner
+# Telemetry broadcast task (1 Hz for real-time second-by-second signal transitions including YELLOW clearance)
+async def run_signal_telemetry_loop():
+    logger.info("Authoritative 1 Hz signal telemetry broadcaster loop started.")
+    while True:
+        try:
+            await pipeline.broadcast_signal_telemetry()
+        except Exception as e:
+            logger.error(f"Error in signal telemetry loop: {e}")
+        await asyncio.sleep(1.0)
+
+# Background AI multi-agent decision pipeline runner (evaluated every 3s)
 async def run_pipeline_loop():
     mqtt_client.connect()
     logger.info("Background DataFlowPipeline loop started.")
@@ -50,10 +62,11 @@ async def run_pipeline_loop():
             await pipeline.run_step()
         except Exception as e:
             logger.error(f"Error in pipeline loop step: {e}")
-        await asyncio.sleep(3) # Periodic pipeline refresh every 3s
+        await asyncio.sleep(3) # Periodic AI decision refresh every 3s
 
 @app.on_event("startup")
 async def startup_event():
+    asyncio.create_task(run_signal_telemetry_loop())
     asyncio.create_task(run_pipeline_loop())
 
 # Include Routers under both /api/v1 and /api
@@ -68,6 +81,8 @@ for prefix in [settings.API_V1_STR, "/api"]:
     app.include_router(routes_hardware.router, prefix=prefix)
     app.include_router(routes_logs.router, prefix=prefix)
     app.include_router(routes_decision.router, prefix=prefix)
+    app.include_router(routes_prediction.router, prefix=prefix)
+    app.include_router(routes_scenario.router, prefix=prefix)
 
 @app.get("/")
 async def root():

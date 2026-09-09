@@ -1,15 +1,14 @@
 # Python
-__pycache__/
-*.py[cod]
-*.pyo
-.venv/
-venv/
-env/
+**/.venv/
+**/venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
 
 # Node
-node_modules/
-dist/
-build/
+**/node_modules/
+**/dist/
 
 # Environment / secrets
 .env
@@ -20,25 +19,23 @@ build/
 .vscode/
 .idea/
 
-# Python cache / tools
-.pytest_cache/
-.mypy_cache/
-
-# Logs
-*.log
-
 # OS
 .DS_Store
 Thumbs.db
 
-# SUMO generated files
-*.netstate.xml
-*.tripinfo.xml
-*.fcd.xml
-*.vehroute.xml
-*.emission.xml
-*.summary.xml
+# Logs
+*.log
 
-# Temporary files
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary & Build cache
 *.tmp
 *.temp
+**/*.timestamp-*.mjs
+**/vite.config.js.timestamp-*
+.freebuff/
+Mosquitto/
+cd cTraffic Projecttraffic-control-.txt

@@ -19,9 +19,30 @@ class CameraTrafficProvider(TrafficStateProvider):
         self._source = "camera_yolo"
         self._source_name = "YOLOv8 Live Camera Feed Pipeline (Semester 6 Vision Stub)"
         self._confidence = "estimated"
+        self._active_scenario = "normal"
+        self._scenario_impact = "Nominal baseline conditions (Camera vision feed standby)"
 
     def get_source_name(self) -> str:
         return self._source_name
+
+    def inject_scenario(self, scenario: str, approach: str = "North", intensity: float = 1.0, details=None):
+        self._active_scenario = scenario
+        self._scenario_impact = f"Scenario {scenario} active on {approach} (Camera Vision Mode)"
+        return {
+            "status": "SUCCESS",
+            "active_scenario": self._active_scenario,
+            "scenario_label": self._active_scenario.replace("_", " ").title(),
+            "description": self._scenario_impact,
+            "ai_response_plan": "AI Supervisor adapted vision detector thresholds.",
+            "affected_approaches": [approach] if approach else ["North", "South", "East", "West"]
+        }
+
+    def get_active_scenario(self):
+        return {
+            "active_scenario": self._active_scenario,
+            "scenario_label": self._active_scenario.replace("_", " ").title(),
+            "description": self._scenario_impact
+        }
 
     async def get_current_state(self) -> TrafficState:
         now_str = datetime.now().isoformat()
@@ -36,7 +57,10 @@ class CameraTrafficProvider(TrafficStateProvider):
             throughput_vph=0,
             level_of_service="N/A (Camera Standby)",
             active_signals=0,
-            ai_control_mode="Camera Ready Stub"
+            ai_control_mode="Camera Ready Stub",
+            signal_mode="paired_corridor",
+            active_scenario=self._active_scenario,
+            scenario_impact=self._scenario_impact
         )
 
         return TrafficState(

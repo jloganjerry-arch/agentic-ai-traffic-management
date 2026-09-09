@@ -1,6 +1,8 @@
 import json
 import time
 import logging
+import os
+import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from app.core.logger import logger
@@ -14,6 +16,7 @@ except ImportError:
 
 # Standard MQTT Topics
 TOPIC_CONTROL = "traffic/signals/control"
+TOPIC_SIGNAL = "traffic/signal"
 TOPIC_STATUS = "traffic/signals/status"
 TOPIC_HEARTBEAT = "traffic/system/heartbeat"
 TOPIC_LOGS = "traffic/system/logs"
@@ -46,7 +49,8 @@ class HardwareMQTTClient:
 
         if PAHO_AVAILABLE:
             try:
-                self.client = mqtt.Client(client_id="TrafficControlCenterBackend")
+                unique_cid = f"TrafficControlCenterBackend_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+                self.client = mqtt.Client(client_id=unique_cid)
                 self.client.on_connect = self._on_connect
                 self.client.on_disconnect = self._on_disconnect
                 self.client.on_message = self._on_message
@@ -119,6 +123,43 @@ class HardwareMQTTClient:
 
         logger.info(f"[MQTT SIMULATOR] Dispatched command to {topic}: {signal_id} -> {state} ({duration}s)")
 
+    def publish_live_phase(
+        self,
+        phase_cmd: str,
+        signal_mode: str = "paired_corridor",
+        approach_states: Optional[Dict[str, str]] = None,
+        duration: int = 30,
+        decision_id: str = "DEC-LIVE-001"
+    ):
+        """
+        Publishes the authoritative active traffic phase to both traffic/signal and traffic/signals/control.
+        Supports both 2-Phase Paired (NS_GREEN, EW_GREEN, etc.) and 4-Phase One-by-One (NORTH_GREEN, EAST_GREEN, etc.).
+        """
+        self.last_publish_time = datetime.now().strftime("%H:%M:%S")
+        sync_payload = {
+            "event": "SIGNAL_COMMAND",
+            "decision_id": decision_id,
+            "mode": signal_mode,
+            "phase": phase_cmd,
+            "state": phase_cmd,
+            "duration_sec": duration,
+            "timestamp": datetime.now().isoformat()
+        }
+        if approach_states:
+            sync_payload.update(approach_states)
+
+        if self.connected and self.client:
+            try:
+                # 1. Publish plain string phase to traffic/signal
+                self.client.publish(TOPIC_SIGNAL, phase_cmd)
+                # 2. Publish structured sync to traffic/signals/control
+                self.client.publish(TOPIC_CONTROL, json.dumps(sync_payload))
+                logger.info(f"Published live phase command [{phase_cmd}] mode [{signal_mode}] to MQTT")
+            except Exception as e:
+                logger.warning(f"MQTT publish_live_phase failed: {e}")
+        else:
+            logger.info(f"[MQTT SIMULATOR] Dispatched live phase [{phase_cmd}] to topics {TOPIC_SIGNAL} & {TOPIC_CONTROL}")
+
     def publish_decision_plan(self, decision: Dict[str, Any]):
         self.latest_decision_published = decision
         self.last_publish_time = datetime.now().strftime("%H:%M:%S")
@@ -137,6 +178,7 @@ class HardwareMQTTClient:
 
         if self.connected and self.client:
             try:
+                # Publish rich JSON to control topic
                 self.client.publish(TOPIC_CONTROL, json.dumps(payload))
                 logger.info(f"Published decision plan {decision.get('decision_id')} to MQTT topic {TOPIC_CONTROL}")
             except Exception as e:
@@ -170,6 +212,17 @@ class HardwareMQTTClient:
         if self.connected and self.client:
             try:
                 self.client.publish(TOPIC_CONTROL, json.dumps(payload))
+                
+                # Also publish direct string command to traffic/signal
+                direction_lower = direction.lower()
+                if "north" in direction_lower or "south" in direction_lower:
+                    cmd = "NS_YELLOW" if "yellow" in state.lower() else "NS_GREEN"
+                    self.client.publish(TOPIC_SIGNAL, cmd)
+                elif "east" in direction_lower or "west" in direction_lower:
+                    cmd = "EW_YELLOW" if "yellow" in state.lower() else "EW_GREEN"
+                    self.client.publish(TOPIC_SIGNAL, cmd)
+                elif "all_red" in state.lower():
+                    self.client.publish(TOPIC_SIGNAL, "ALL_RED")
             except Exception as e:
                 logger.warning(f"Manual override publish failed: {e}")
 

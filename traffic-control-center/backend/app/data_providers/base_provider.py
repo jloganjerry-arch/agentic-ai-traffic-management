@@ -49,3 +49,20 @@ class TrafficStateProvider(ABC):
         """Returns status of hardware nodes/microcontrollers."""
         state = await self.get_current_state()
         return [hw.model_dump() for hw in state.hardware_status]
+
+    def inject_scenario(self, scenario: str, approach: str = "North", intensity: float = 1.0, details: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Injects a dynamic stress-test traffic scenario."""
+        return {"status": "SUCCESS", "scenario": scenario, "approach": approach}
+
+    def get_active_scenario(self) -> Dict[str, Any]:
+        """Returns the currently active scenario metadata."""
+        return {"active_scenario": "normal", "description": "Nominal baseline traffic"}
+
+    def set_signal_mode(self, mode: str) -> str:
+        """Sets the active signal sequencing mode ('paired_corridor' or 'one_by_one')."""
+        return mode
+
+    def get_signal_mode(self) -> str:
+        """Gets the active signal sequencing mode ('paired_corridor' or 'one_by_one')."""
+        return "paired_corridor"
+

@@ -9,9 +9,8 @@ export class WebSocketManager {
 
   getWsUrl() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname || 'localhost';
-    const port = '8000';
-    return `${protocol}//${host}:${port}${this.endpoint}`;
+    const host = window.location.host || '127.0.0.1:3000';
+    return `${protocol}//${host}${this.endpoint}`;
   }
 
   connect() {
